@@ -56,6 +56,8 @@ h1 { margin: 2px 0 0; font-family: var(--f-head); font-weight: 600; font-size: 2
 .status[data-s="saved"]::before { background: var(--ok); }
 .status[data-s="dirty"]::before, .status[data-s="saving"]::before { background: var(--video); }
 .status[data-s="local"]::before, .status[data-s="error"]::before { background: var(--warn); }
+.status[data-s="browser"]::before { background: var(--ok); }
+.btn[hidden] { display: none; }
 .btn { border: 1px solid var(--line); background: var(--surface); padding: 5px 11px; border-radius: 6px; cursor: pointer; font-size: 13px; }
 .btn:hover { border-color: var(--muted); }
 
@@ -153,6 +155,8 @@ textarea.prompt[readonly] { cursor: text; }
   </div>
   <div class="actions">
     <span class="status" id="status" data-s="idle" role="status">Загрузка</span>
+    <button class="btn" id="dl-html" type="button" hidden title="Страница со всеми правками одним файлом — можно открыть или переслать">Скачать HTML</button>
+    <button class="btn" id="dl-json" type="button" hidden title="Только данные — положи вместо data.json в папке проекта">Скачать data.json</button>
     <button class="btn" id="copy-json" type="button">Скопировать JSON</button>
   </div>
 </header>
@@ -166,10 +170,11 @@ textarea.prompt[readonly] { cursor: text; }
   </div>
 </div>
 
+<script type="application/json" id="nona-data"></script>
 <script>
 (() => {
   const $ = (s, r = document) => r.querySelector(s);
-  const KEY = "nona-draft";
+  const KEY = "nona-draft" + (window.claude && window.claude.use ? "" : ":" + location.pathname);
   const TAGS = { lipsync: ["липсинк", "lip"], vo: ["VO", ""], speech: ["english speech", ""], bw: ["ч/б на посте", ""], sfx: ["звук", ""] };
   let S = null, served = "", art = null, dirty = false, saving = false, timer = null, readOnly = false, retried = false;
   let filter = "all";
@@ -191,6 +196,50 @@ textarea.prompt[readonly] { cursor: text; }
   const hash = s => { let x = 0; for (let i = 0; i < s.length; i++) x = (x * 31 + s.charCodeAt(i)) | 0; return String(x); };
   const byId = (list, id) => (list || []).find(x => x.id === id);
 
+
+  /* ---------- standalone mode (opened outside Claude: Codex, local file, any hosting) ---------- */
+  const PRISTINE = "<!doctype html>\n" + document.documentElement.outerHTML;
+  const OUTSIDE = !(window.claude && window.claude.use);
+  let standalone = false;
+  function fileSave(name, blob) {
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  }
+  const slugOf = t => (t || "nona").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "") || "nona";
+  function embedJSON(doc, id, obj) {
+    let el = doc.getElementById(id);
+    if (!el) { el = doc.createElement("script"); el.type = "application/json"; el.id = id; doc.body.append(el); }
+    el.textContent = JSON.stringify(obj).replace(/</g, "\\u003c");
+  }
+  function exportHTML(extra) {
+    const doc = new DOMParser().parseFromString(PRISTINE, "text/html");
+    embedJSON(doc, "nona-data", S); if (extra) extra(doc);
+    return "<!doctype html>\n" + doc.documentElement.outerHTML;
+  }
+  async function loadData() {
+    const slot = document.getElementById("nona-data"), t = slot && slot.textContent.trim();
+    if (t) return t;
+    try { const r = await fetch("data.json", { cache: "no-store" }); if (r.ok) return await r.text(); } catch (e) {}
+    if (!OUTSIDE) return null;
+    return new Promise(ok => {
+      const inp = h("input", { type: "file", accept: ".json,application/json", hidden: true });
+      const read = f => f && f.text().then(txt => { pick.remove(); inp.remove(); ok(txt); });
+      inp.addEventListener("change", () => read(inp.files[0]));
+      const pick = h("button", { class: "btn", type: "button", text: "Открыть data.json", onclick: () => inp.click() });
+      $("#h-title").textContent = "Открой data.json проекта";
+      $("#h-meta").textContent = "Браузер не даёт странице прочитать файл рядом с ней. Выбери data.json или перетащи его на страницу.";
+      document.querySelector("header .actions").prepend(pick, inp);
+      document.addEventListener("dragover", e => e.preventDefault());
+      document.addEventListener("drop", e => { e.preventDefault(); read(e.dataTransfer.files[0]); }, { once: true });
+    });
+  }
+  function enterStandalone() {
+    standalone = true; readOnly = true; clearTimeout(timer);
+    document.body.classList.add("standalone");
+    ["#dl-html", "#dl-json"].forEach(s => { const b = $(s); if (b) b.hidden = false; });
+    setStatus(dirty ? "browser" : "saved");
+  }
+
   /* ---------- status & saving ---------- */
   let viewOnly = false;
   function applyViewOnly() {
@@ -200,11 +249,11 @@ textarea.prompt[readonly] { cursor: text; }
     document.querySelectorAll(".nf input[type=checkbox]").forEach(c => (c.disabled = true));
     setStatus("view");
   }
-  const LABEL = { view: "Только просмотр", idle: "Загрузка", saved: "Сохранено", dirty: "Есть правки", saving: "Сохраняю…", local: "Правки только в этом браузере", conflict: "Загружаю новую версию…", error: "Не удалось сохранить" };
-  function setStatus(s) { const el = $("#status"); el.dataset.s = s; el.textContent = LABEL[s]; el.title = s === "local" ? "Здесь сохранение в артефакт недоступно. Правки лежат в браузере — нажми «Скопировать JSON» и пришли в чат." : ""; }
+  const LABEL = { view: "Только просмотр", idle: "Загрузка", saved: "Сохранено", dirty: "Есть правки", saving: "Сохраняю…", local: "Правки только в этом браузере", browser: "Сохранено в браузере", conflict: "Загружаю новую версию…", error: "Не удалось сохранить" };
+  function setStatus(s) { const el = $("#status"); el.dataset.s = s; el.textContent = LABEL[s]; el.title = s === "local" ? "Здесь сохранение в артефакт недоступно. Правки лежат в браузере — нажми «Скопировать JSON» и пришли в чат." : s === "browser" ? "Правки лежат в этом браузере. Чтобы забрать их — «Скачать HTML» или «Скачать data.json»." : ""; }
   function setRO() { readOnly = true; setStatus(dirty ? "local" : "saved"); if (dirty) setStatus("local"); }
   function stash() { try { localStorage.setItem(KEY, JSON.stringify({ base: hash(served), data: S })); } catch (e) {} }
-  function changed() { dirty = true; stash(); if (readOnly) { setStatus("local"); return; } setStatus("dirty"); schedule(2000); }
+  function changed() { dirty = true; stash(); if (readOnly) { setStatus(standalone ? "browser" : "local"); return; } setStatus("dirty"); schedule(2000); }
   function schedule(ms) { clearTimeout(timer); timer = setTimeout(save, ms); }
   async function save() {
     if (saving || !dirty || readOnly) return;
@@ -419,6 +468,8 @@ textarea.prompt[readonly] { cursor: text; }
     board.addEventListener("focusout", e => { if (!board.contains(e.relatedTarget)) light(null); });
     new ResizeObserver(() => { fitAll(); queueEdges(); }).observe(board);
     if (document.fonts) document.fonts.addEventListener("loadingdone", () => { fitAll(); queueEdges(); });
+    $("#dl-html").addEventListener("click", () => fileSave(slugOf(S.title) + ".html", new Blob([exportHTML()], { type: "text/html" })));
+    $("#dl-json").addEventListener("click", () => fileSave("data.json", new Blob([JSON.stringify(S, null, 2)], { type: "application/json" })));
     $("#copy-json").addEventListener("click", e => {
       const b = e.currentTarget, txt = JSON.stringify(S, null, 2);
       const done = () => { b.textContent = "JSON скопирован"; setTimeout(() => (b.textContent = "Скопировать JSON"), 1600); };
@@ -428,7 +479,7 @@ textarea.prompt[readonly] { cursor: text; }
 
   /* ---------- boot ---------- */
   async function boot() {
-    try { const r = await fetch("data.json", { cache: "no-store" }); if (!r.ok) throw 0; served = await r.text(); S = JSON.parse(served); }
+    try { served = await loadData(); if (served == null) throw 0; S = JSON.parse(served); }
     catch (e) { $("#h-title").textContent = "Не удалось загрузить data.json"; setStatus("error"); return; }
     try { const d = JSON.parse(localStorage.getItem(KEY) || "null"); if (d && d.base === hash(served) && d.data) { S = d.data; dirty = true; } } catch (e) {}
     S.characters ||= []; S.frames ||= []; S.shots ||= []; S.groups ||= [];
@@ -436,7 +487,7 @@ textarea.prompt[readonly] { cursor: text; }
     setStatus(dirty ? "dirty" : "saved");
     if (document.fonts) document.fonts.ready.then(() => { document.querySelectorAll("textarea.prompt").forEach(fit); queueEdges(); });
     const use = window.claude && window.claude.use;
-    if (!use) { applyViewOnly(); return; }
+    if (!use) { enterStandalone(); return; }
     Promise.all([window.claude.use("artifact"), window.claude.use("user").catch(() => null)]).then(async ([a, u]) => {
       art = a;
       if (!a) { applyViewOnly(); return; }

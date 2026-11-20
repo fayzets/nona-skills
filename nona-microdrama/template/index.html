@@ -44,6 +44,8 @@ h1 { margin: 2px 0 0; font-family: var(--f-head); font-weight: 600; font-size: 2
 .status[data-s="saved"]::before { background: var(--ok); }
 .status[data-s="dirty"]::before, .status[data-s="saving"]::before { background: var(--gen); }
 .status[data-s="local"]::before, .status[data-s="error"]::before { background: var(--warn); }
+.status[data-s="browser"]::before { background: var(--ok); }
+.btn[hidden] { display: none; }
 .btn { border: 1px solid var(--line); background: var(--surface); padding: 5px 11px; border-radius: 6px; cursor: pointer; font-size: 13px; }
 .btn:hover { border-color: var(--muted); }
 .btn.sm { padding: 2px 8px; font-size: 12px; }
@@ -211,6 +213,8 @@ input[type=color].fi { padding: 0 2px; height: 26px; }
   <div class="actions">
     <span class="status" id="status" data-s="idle" role="status">Загрузка</span>
     <button class="btn" id="fold-all" type="button">Свернуть все</button>
+    <button class="btn" id="dl-html" type="button" hidden title="Страница со всеми правками одним файлом — можно открыть или переслать">Скачать HTML</button>
+    <button class="btn" id="dl-json" type="button" hidden title="Только данные — положи вместо data.json в папке проекта">Скачать data.json</button>
     <button class="btn" id="copy-json" type="button">Скопировать JSON</button>
   </div>
 </header>
@@ -264,9 +268,11 @@ input[type=color].fi { padding: 0 2px; height: 26px; }
   <aside class="ed-side ed-right" id="ed-right"></aside>
 </div>
 
+<script type="application/json" id="nona-data"></script>
+<script type="application/json" id="nona-snaps"></script>
 <script type="module">
 const $ = (s, r = document) => r.querySelector(s);
-const KEY = "nona-md-draft";
+const KEY = "nona-md-draft" + (window.claude && window.claude.use ? "" : ":" + location.pathname);
 const SIZES = ["EWS", "WS", "MWS", "MS", "MCU", "CU", "ECU", "insert"];
 const ANGLES = ["eye level", "high", "low", "top", "dutch", "OTS", "POV"];
 const ROLES = { master: "общий", coverage: "покрытие", reaction: "реакция", insert: "инсерт", bridge: "мост" };
@@ -307,12 +313,69 @@ const uid = p => p + Math.random().toString(36).slice(2, 8);
 const clone = o => JSON.parse(JSON.stringify(o));
 const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+
+/* ---------- standalone mode (opened outside Claude: Codex, local file, any hosting) ---------- */
+const PRISTINE = "<!doctype html>\n" + document.documentElement.outerHTML;
+const OUTSIDE = !(window.claude && window.claude.use);
+let standalone = false;
+function fileSave(name, blob) {
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+const slugOf = t => (t || "nona").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "") || "nona";
+function embedJSON(doc, id, obj) {
+  let el = doc.getElementById(id);
+  if (!el) { el = doc.createElement("script"); el.type = "application/json"; el.id = id; doc.body.append(el); }
+  el.textContent = JSON.stringify(obj).replace(/</g, "\\u003c");
+}
+function exportHTML(extra) {
+  const doc = new DOMParser().parseFromString(PRISTINE, "text/html");
+  embedJSON(doc, "nona-data", S); if (extra) extra(doc);
+  return "<!doctype html>\n" + doc.documentElement.outerHTML;
+}
+async function loadData() {
+  const slot = document.getElementById("nona-data"), t = slot && slot.textContent.trim();
+  if (t) return t;
+  try { const r = await fetch("data.json", { cache: "no-store" }); if (r.ok) return await r.text(); } catch (e) {}
+  if (!OUTSIDE) return null;
+  return new Promise(ok => {
+    const inp = h("input", { type: "file", accept: ".json,application/json", hidden: true });
+    const read = f => f && f.text().then(txt => { pick.remove(); inp.remove(); ok(txt); });
+    inp.addEventListener("change", () => read(inp.files[0]));
+    const pick = h("button", { class: "btn", type: "button", text: "Открыть data.json", onclick: () => inp.click() });
+    $("#h-title").textContent = "Открой data.json проекта";
+    $("#h-meta").textContent = "Браузер не даёт странице прочитать файл рядом с ней. Выбери data.json или перетащи его на страницу.";
+    document.querySelector("header .actions").prepend(pick, inp);
+    document.addEventListener("dragover", e => e.preventDefault());
+    document.addEventListener("drop", e => { e.preventDefault(); read(e.dataTransfer.files[0]); }, { once: true });
+  });
+}
+function enterStandalone() {
+  standalone = true; readOnly = true; clearTimeout(timer);
+  document.body.classList.add("standalone");
+  ["#dl-html", "#dl-json"].forEach(s => { const b = $(s); if (b) b.hidden = false; });
+  setStatus(dirty ? "browser" : "saved");
+}
+
+/* standalone snapshots: kept as data URLs, persisted in IndexedDB, embedded into the downloaded HTML */
+const SNAPS = {};
+try { Object.assign(SNAPS, JSON.parse(document.getElementById("nona-snaps")?.textContent || "{}")); } catch (e) {}
+const IDB = {
+  db: null,
+  open() { return this.db ||= new Promise((ok, bad) => { const r = indexedDB.open("nona-md", 1); r.onupgradeneeded = () => r.result.createObjectStore("snaps"); r.onsuccess = () => ok(r.result); r.onerror = () => bad(r.error); }); },
+  async put(k, v) { try { const db = await this.open(); db.transaction("snaps", "readwrite").objectStore("snaps").put(v, k); } catch (e) {} },
+  async get(k) { try { const db = await this.open(); return await new Promise(ok => { const q = db.transaction("snaps").objectStore("snaps").get(k); q.onsuccess = () => ok(q.result); q.onerror = () => ok(null); }); } catch (e) { return null; } }
+};
+async function restoreSnaps() {
+  for (const s of S.shots) { if (!s.snapAt) continue; const v = await IDB.get(KEY + ":" + s.id); if (v && v.at === s.snapAt) SNAPS[s.id] = v.url; }
+}
+
 /* ---------- saving ---------- */
-const LABEL = { view: "Только просмотр", idle: "Загрузка", saved: "Сохранено", dirty: "Есть правки", saving: "Сохраняю…", local: "Правки только в этом браузере", conflict: "Загружаю новую версию…", error: "Не удалось сохранить" };
-function setStatus(s) { const el = $("#status"); el.dataset.s = s; el.textContent = LABEL[s]; el.title = s === "local" ? "Сохранение в артефакт здесь недоступно. Нажми «Скопировать JSON» и пришли в чат." : ""; }
+const LABEL = { view: "Только просмотр", idle: "Загрузка", saved: "Сохранено", dirty: "Есть правки", saving: "Сохраняю…", local: "Правки только в этом браузере", browser: "Сохранено в браузере", conflict: "Загружаю новую версию…", error: "Не удалось сохранить" };
+function setStatus(s) { const el = $("#status"); el.dataset.s = s; el.textContent = LABEL[s]; el.title = s === "local" ? "Сохранение в артефакт здесь недоступно. Нажми «Скопировать JSON» и пришли в чат." : s === "browser" ? "Правки и снимки лежат в этом браузере. Чтобы забрать их — «Скачать HTML» (всё в одном файле) или «Скачать data.json»." : ""; }
 function applyViewOnly() { viewOnly = true; readOnly = true; clearTimeout(timer); setStatus(dirty ? "local" : "view"); }
 function stash() { try { localStorage.setItem(KEY, JSON.stringify({ base: hash(served), data: S })); } catch (e) {} }
-function changed() { dirty = true; stash(); if (readOnly) { setStatus("local"); return; } setStatus("dirty"); schedule(2500); }
+function changed() { dirty = true; stash(); if (readOnly) { setStatus(standalone ? "browser" : "local"); return; } setStatus("dirty"); schedule(2500); }
 function touch(it) { if (!it) return; if (it.author !== "user") it.edited = true; it.editedAt = new Date().toISOString(); changed(); }
 function schedule(ms) { clearTimeout(timer); timer = setTimeout(save, ms); }
 async function save() {
@@ -355,7 +418,7 @@ function toSeedance(text, leg) {
   leg.forEach(L => { out = out.replace(new RegExp("@" + esc(L.t) + "(?![\\w])", "g"), "Image" + L.i); });
   return out;
 }
-const snapUrl = s => blobUrl[s.id] || (s.snap ? s.snap + "?v=" + (s.snapAt || 0) : null);
+const snapUrl = s => blobUrl[s.id] || SNAPS[s.id] || (s.snap ? s.snap + "?v=" + (s.snapAt || 0) : null);
 function legendList(leg) {
   return h("ul", { class: "legend" }, leg.map(L => {
     let txt = "Image" + L.i + " = ", miss = false;
@@ -434,10 +497,9 @@ function refsRow(it) {
 async function downloadSnap(s, name) {
   const url = snapUrl(s); if (!url) return;
   try {
-    if (!dl) dl = await window.claude?.use?.("downloads");
-    if (!dl) { window.open(url, "_blank"); return; }
-    const blob = await (await fetch(url)).blob();
-    await dl.save({ filename: name || ("board_" + s.n + ".png"), data: blob });
+    if (!dl && !OUTSIDE) dl = await window.claude?.use?.("downloads");
+    const blob = await (await fetch(url)).blob(), fn = name || ("board_" + s.n + ".png");
+    if (dl) await dl.save({ filename: fn, data: blob }); else fileSave(fn, blob);
   } catch (e) { /* viewer declined or unavailable */ }
 }
 
@@ -454,7 +516,7 @@ async function downloadStrip(shots, name, btn) {
     const cx = cv.getContext("2d"); cx.fillStyle = "#ffffff"; cx.fillRect(0, 0, cv.width, cv.height);
     let x = PAD; imgs.forEach((im, i) => { cx.drawImage(im, x, PAD, ws[i], H); x += ws[i] + PAD; });
     const blob = await new Promise(r => cv.toBlob(r, "image/png"));
-    if (!dl) dl = await window.claude?.use?.("downloads");
+    if (!dl && !OUTSIDE) dl = await window.claude?.use?.("downloads");
     if (dl) await dl.save({ filename: name, data: blob });
     else { const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); }
   } catch (e) { /* viewer declined or image failed */ }
@@ -686,6 +748,10 @@ function wire() {
     const anyOpen = vis.some(it => !isFolded(it));
     setFold(vis.map(it => it.id), anyOpen); renderAll();
   });
+  $("#dl-html").addEventListener("click", () => fileSave(slugOf(S.title) + ".html", new Blob([exportHTML(doc => {
+    const keep = {}; S.shots.forEach(x => { if (SNAPS[x.id]) keep[x.id] = SNAPS[x.id]; }); embedJSON(doc, "nona-snaps", keep);
+  })], { type: "text/html" })));
+  $("#dl-json").addEventListener("click", () => fileSave("data.json", new Blob([JSON.stringify(S, null, 1)], { type: "application/json" })));
   $("#copy-json").addEventListener("click", e => {
     const b = e.currentTarget;
     try { navigator.clipboard.writeText(JSON.stringify(S, null, 1)).then(() => { b.textContent = "JSON скопирован"; setTimeout(() => (b.textContent = "Скопировать JSON"), 1600); }, () => { b.textContent = "Не вышло"; }); } catch (err) {}
@@ -1133,7 +1199,9 @@ async function snap() {
   pending[path] = blob;
   if (blobUrl[s.id]) URL.revokeObjectURL(blobUrl[s.id]);
   blobUrl[s.id] = URL.createObjectURL(blob);
-  s.snap = path; s.snapAt = Date.now(); s.desc = desc; touch(s);
+  s.snap = path; s.snapAt = Date.now(); s.desc = desc;
+  if (OUTSIDE) { delete pending[path]; SNAPS[s.id] = url; IDB.put(KEY + ":" + s.id, { at: s.snapAt, url }); }
+  touch(s);
   const f = $("#ed-flash"); f.style.transition = "none"; f.style.opacity = ".7"; requestAnimationFrame(() => { f.style.transition = ""; f.style.opacity = "0"; });
   flashMsg("Снято: кадр " + s.n); renderRight();
 }
@@ -1370,14 +1438,15 @@ function closeEditor() { if (E.tc) E.tc.detach(); E.sel = null; $("#ed").hidden 
 
 /* ---------- boot ---------- */
 async function boot() {
-  try { const r = await fetch("data.json", { cache: "no-store" }); if (!r.ok) throw 0; served = await r.text(); S = JSON.parse(served); }
+  try { served = await loadData(); if (served == null) throw 0; S = JSON.parse(served); }
   catch (e) { $("#h-title").textContent = "Не удалось загрузить data.json"; setStatus("error"); return; }
   try { const d = JSON.parse(localStorage.getItem(KEY) || "null"); if (d && d.base === hash(served) && d.data) { S = d.data; dirty = true; } } catch (e) {}
   S.cards ||= []; S.blocks ||= []; S.shots ||= []; S.gens ||= []; S.settings ||= {};
+  if (OUTSIDE && dirty) await restoreSnaps();
   renderAll(); wire();
   setStatus(dirty ? "dirty" : "saved");
   if (document.fonts) document.fonts.ready.then(() => { fitAll(); queueEdges(); });
-  if (!window.claude || !window.claude.use) { applyViewOnly(); return; }
+  if (OUTSIDE) { enterStandalone(); return; }
   Promise.all([window.claude.use("artifact"), window.claude.use("user").catch(() => null)]).then(async ([a, u]) => {
     art = a; if (!a) { applyViewOnly(); return; }
     if (u) { let ok = true; try { ok = await u.canEdit(); } catch (e) {} if (!ok) { applyViewOnly(); return; } }
