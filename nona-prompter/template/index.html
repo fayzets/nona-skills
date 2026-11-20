@@ -1,0 +1,449 @@
+<meta charset="utf-8">
+<title>__TITLE__</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: production node board — three columns (characters → first frames → video), bezier edges between them; stacks to one column on phones. */
+:root {
+  --bg: #eef0f4;
+  --surface: #ffffff;
+  --sunk: #f6f7f9;
+  --ink: #181b22;
+  --muted: #5d6472;
+  --line: #d7dbe3;
+  --char: #7449d0;
+  --frame: #2765d6;
+  --video: #b86e00;
+  --lip: #c92a62;
+  --ok: #23824f;
+  --warn: #b5470b;
+  --f-ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-head: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111318; --surface: #1a1d25; --sunk: #14171d; --ink: #e6e8ee; --muted: #98a0ae; --line: #2b303b;
+    --char: #a98cf2; --frame: #6f9ff6; --video: #f0b04a; --lip: #f2789f; --ok: #5cc68b; --warn: #f08a4b;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111318; --surface: #1a1d25; --sunk: #14171d; --ink: #e6e8ee; --muted: #98a0ae; --line: #2b303b;
+  --char: #a98cf2; --frame: #6f9ff6; --video: #f0b04a; --lip: #f2789f; --ok: #5cc68b; --warn: #f08a4b;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--f-ui); font-size: 14px; line-height: 1.45; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--frame); outline-offset: 2px; }
+
+.top {
+  display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px;
+  padding-block: 20px 12px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.brand { font-family: var(--f-head); font-weight: 600; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+h1 { margin: 2px 0 0; font-family: var(--f-head); font-weight: 600; font-size: 26px; line-height: 1.15; text-wrap: balance; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 6px; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.meta b { color: var(--ink); font-weight: 600; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); padding: 5px 10px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); }
+.status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.status[data-s="saved"]::before { background: var(--ok); }
+.status[data-s="dirty"]::before, .status[data-s="saving"]::before { background: var(--video); }
+.status[data-s="local"]::before, .status[data-s="error"]::before { background: var(--warn); }
+.btn { border: 1px solid var(--line); background: var(--surface); padding: 5px 11px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.btn:hover { border-color: var(--muted); }
+
+.tabs {
+  display: flex; flex-wrap: wrap; gap: 6px; padding-block: 4px 14px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.tab { border: 1px solid var(--line); background: transparent; padding: 4px 12px; border-radius: 999px; cursor: pointer; font-size: 13px; color: var(--muted); }
+.tab[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+
+.scroller { overflow-x: auto; padding-block: 0 48px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.board { position: relative; display: grid; grid-template-columns: 300px 380px 460px; column-gap: 96px; align-items: start; width: max-content; }
+#edges { position: absolute; inset: 0; pointer-events: none; overflow: visible; z-index: 0; }
+#edges path { fill: none; stroke-width: 1.5; opacity: .32; transition: opacity .15s; }
+#edges path.k-char { stroke: var(--char); }
+#edges path.k-frame { stroke: var(--frame); }
+.board.focus #edges path { opacity: .07; }
+.board.focus #edges path.lit { opacity: 1; stroke-width: 2; }
+
+.col { position: relative; z-index: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.col-h { display: flex; align-items: baseline; gap: 8px; font-family: var(--f-head); font-weight: 600; font-size: 13px; letter-spacing: .1em; text-transform: uppercase; margin: 0 0 2px; }
+.col-h .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+.col-h::before { content: ""; width: 10px; height: 10px; border-radius: 3px; background: var(--k); align-self: center; }
+.col[data-k="char"] { --k: var(--char); }
+.col[data-k="frame"] { --k: var(--frame); }
+.col[data-k="shot"] { --k: var(--video); }
+.group-h { font-family: var(--f-head); font-weight: 600; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); padding-top: 10px; border-top: 1px solid var(--line); margin-top: 6px; }
+.group-h:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+
+.node { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px 10px; display: flex; flex-direction: column; gap: 8px; min-width: 0; transition: opacity .15s, border-color .15s; border-left: 3px solid var(--k); }
+.node[data-k="char"] { --k: var(--char); }
+.node[data-k="frame"] { --k: var(--frame); }
+.node[data-k="shot"] { --k: var(--video); }
+.node.post { --k: var(--line); background: var(--sunk); }
+.node.done { --k: var(--line); background: var(--sunk); }
+.node.done .ttl, .node.done .sid { color: var(--muted); }
+.node.collapsed { padding-block: 7px; opacity: .72; }
+.node.collapsed > :not(.nh) { display: none; }
+.node.collapsed:hover { opacity: 1; }
+.chip.okc { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.toggle { border: 1px solid var(--line); background: var(--surface); color: var(--muted); border-radius: 6px; padding: 2px 8px; font-size: 12px; cursor: pointer; }
+.toggle:hover { color: var(--ink); border-color: var(--muted); }
+.board.focus .node { opacity: .35; }
+.board.focus .node.lit { opacity: 1; border-color: var(--k); }
+.nh { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.sid { font-family: var(--f-mono); font-size: 12px; font-weight: 500; color: var(--k); min-width: 2ch; }
+.node.post .sid { color: var(--muted); }
+.ttl { font-weight: 600; flex: 1 1 auto; min-width: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip { font-size: 11px; line-height: 1; padding: 4px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.chip.lip { color: var(--lip); border-color: color-mix(in srgb, var(--lip) 45%, transparent); }
+.chip.ref-frame { color: var(--frame); border-color: color-mix(in srgb, var(--frame) 40%, transparent); }
+.chip.ref-char { color: var(--char); border-color: color-mix(in srgb, var(--char) 40%, transparent); }
+.chip.code { font-family: var(--f-mono); }
+.vo { margin: 0; font-size: 12.5px; color: var(--muted); font-style: italic; }
+.note { margin: 0; font-size: 12.5px; color: var(--warn); }
+.legend { margin: 0; font-family: var(--f-mono); font-size: 11.5px; color: var(--frame); }
+.refs { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 0; font-size: 12.5px; }
+.refs a { color: var(--k); text-decoration: none; overflow-wrap: anywhere; }
+.refs a:hover { text-decoration: underline; }
+.refs a::before { content: "↗ "; }
+textarea.prompt {
+  width: 100%; resize: none; overflow: hidden; border: 1px solid transparent; border-radius: 6px;
+  background: var(--sunk); color: var(--ink); font-family: var(--f-mono); font-size: 12.5px; line-height: 1.5;
+  padding: 8px 9px; min-height: 3em; display: block;
+}
+textarea.prompt:hover { border-color: var(--line); }
+textarea.prompt:focus { outline: none; border-color: var(--k); background: var(--surface); }
+textarea.prompt[readonly] { cursor: text; }
+.view-only textarea.prompt:hover, .view-only textarea.prompt:focus { border-color: transparent; background: var(--sunk); }
+.view-only .nf label { cursor: default; }
+.nf { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; color: var(--muted); }
+.nf label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.copy { border: 0; background: transparent; color: var(--k); cursor: pointer; padding: 2px 4px; font-size: 12.5px; font-weight: 500; }
+.copy:hover { text-decoration: underline; }
+.empty { color: var(--muted); padding: 24px 0; }
+
+@media (max-width: 900px) {
+  .board { display: flex; flex-direction: column; gap: 28px; width: 100%; }
+  #edges { display: none; }
+  .scroller { overflow-x: visible; }
+  h1 { font-size: 22px; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<header class="top">
+  <div>
+    <div class="brand">Nona Prompter</div>
+    <h1 id="h-title">Загружаю проект…</h1>
+    <div class="meta" id="h-meta"></div>
+  </div>
+  <div class="actions">
+    <span class="status" id="status" data-s="idle" role="status">Загрузка</span>
+    <button class="btn" id="copy-json" type="button">Скопировать JSON</button>
+  </div>
+</header>
+<nav class="tabs" id="tabs" aria-label="Версии"></nav>
+<div class="scroller">
+  <div class="board" id="board">
+    <svg id="edges" aria-hidden="true"></svg>
+    <section class="col" data-k="char" id="col-char"><h2 class="col-h">Персонажи <span class="n"></span></h2></section>
+    <section class="col" data-k="frame" id="col-frame"><h2 class="col-h">Первые кадры <span class="n"></span></h2></section>
+    <section class="col" data-k="shot" id="col-shot"><h2 class="col-h">Видео <span class="n"></span></h2></section>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = (s, r = document) => r.querySelector(s);
+  const KEY = "nona-draft";
+  const TAGS = { lipsync: ["липсинк", "lip"], vo: ["VO", ""], speech: ["english speech", ""], bw: ["ч/б на посте", ""], sfx: ["звук", ""] };
+  let S = null, served = "", art = null, dirty = false, saving = false, timer = null, readOnly = false, retried = false;
+  let filter = "all";
+  try { filter = sessionStorage.getItem(KEY + ":tab") || "all"; } catch (e) {}
+
+  function h(tag, props = {}, ...kids) {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (v == null || v === false) continue;
+      if (k === "class") n.className = v;
+      else if (k === "text") n.textContent = v;
+      else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+      else if (k in n && typeof v !== "string") n[k] = v;
+      else n.setAttribute(k, v === true ? "" : v);
+    }
+    for (const c of kids.flat()) if (c != null) n.append(c);
+    return n;
+  }
+  const hash = s => { let x = 0; for (let i = 0; i < s.length; i++) x = (x * 31 + s.charCodeAt(i)) | 0; return String(x); };
+  const byId = (list, id) => (list || []).find(x => x.id === id);
+
+  /* ---------- status & saving ---------- */
+  let viewOnly = false;
+  function applyViewOnly() {
+    viewOnly = true; readOnly = true; clearTimeout(timer);
+    document.body.classList.add("view-only");
+    document.querySelectorAll("textarea.prompt").forEach(t => (t.readOnly = true));
+    document.querySelectorAll(".nf input[type=checkbox]").forEach(c => (c.disabled = true));
+    setStatus("view");
+  }
+  const LABEL = { view: "Только просмотр", idle: "Загрузка", saved: "Сохранено", dirty: "Есть правки", saving: "Сохраняю…", local: "Правки только в этом браузере", conflict: "Загружаю новую версию…", error: "Не удалось сохранить" };
+  function setStatus(s) { const el = $("#status"); el.dataset.s = s; el.textContent = LABEL[s]; el.title = s === "local" ? "Здесь сохранение в артефакт недоступно. Правки лежат в браузере — нажми «Скопировать JSON» и пришли в чат." : ""; }
+  function setRO() { readOnly = true; setStatus(dirty ? "local" : "saved"); if (dirty) setStatus("local"); }
+  function stash() { try { localStorage.setItem(KEY, JSON.stringify({ base: hash(served), data: S })); } catch (e) {} }
+  function changed() { dirty = true; stash(); if (readOnly) { setStatus("local"); return; } setStatus("dirty"); schedule(2000); }
+  function schedule(ms) { clearTimeout(timer); timer = setTimeout(save, ms); }
+  async function save() {
+    if (saving || !dirty || readOnly) return;
+    if (!art) { schedule(1500); return; }
+    saving = true; setStatus("saving");
+    const body = JSON.stringify(S, null, 2);
+    try {
+      await art.publish({ "data.json": body });
+      served = body; retried = false;
+      if (JSON.stringify(S, null, 2) === body) { dirty = false; try { localStorage.removeItem(KEY); } catch (e) {} setStatus("saved"); }
+      else { stash(); setStatus("dirty"); schedule(1500); }
+    } catch (e) {
+      const c = e && e.code;
+      if (c === "conflict") setStatus("conflict");
+      else if (["not_writer", "not_granted", "not_declared", "capability_disabled", "capability_removed", "consent_required", "read_only_path"].includes(c)) setRO();
+      else if (c === "rate_limited") { setStatus("dirty"); schedule(15000); }
+      else if (!retried) { retried = true; setStatus("dirty"); schedule(3000 + Math.random() * 2000); }
+      else setStatus("error");
+    } finally { saving = false; }
+  }
+
+  /* ---------- graph helpers ---------- */
+  const shotsVisible = () => S.shots.filter(s => filter === "all" || s.group === filter);
+  function visibleSets() {
+    const shots = shotsVisible();
+    const frames = new Set(), chars = new Set();
+    if (filter === "all") { S.frames.forEach(f => frames.add(f.id)); }
+    else {
+      shots.forEach(s => s.frame && frames.add(s.frame));
+      [...frames].forEach(id => { const f = byId(S.frames, id); if (f && f.location) frames.add(f.location); });
+    }
+    if (filter === "all") S.characters.forEach(c => chars.add(c.id));
+    else [...frames].forEach(id => (byId(S.frames, id)?.characters || []).forEach(c => chars.add(c)));
+    return { shots, frames, chars };
+  }
+  function related(id) {
+    const set = new Set([id]);
+    const addFrame = f => { set.add(f.id); (f.characters || []).forEach(c => set.add(c)); };
+    const sh = byId(S.shots, id), fr = byId(S.frames, id), ch = byId(S.characters, id);
+    if (sh && sh.frame) { const f = byId(S.frames, sh.frame); if (f) addFrame(f); }
+    if (fr) { addFrame(fr); S.shots.filter(s => s.frame === fr.id).forEach(s => set.add(s.id)); }
+    if (ch) S.frames.filter(f => (f.characters || []).includes(id)).forEach(f => { set.add(f.id); S.shots.filter(s => s.frame === f.id).forEach(s => set.add(s.id)); });
+    return set;
+  }
+
+  /* ---------- rendering ---------- */
+  function fit(t) { const want = t.scrollHeight + 2; if (Math.abs(t.offsetHeight - want) < 2 && t.scrollHeight <= t.clientHeight) return; t.style.height = "auto"; t.style.height = t.scrollHeight + 2 + "px"; }
+  function fitAll() { document.querySelectorAll("textarea.prompt").forEach(fit); }
+  function promptBox(item, label) {
+    const t = h("textarea", { class: "prompt", spellcheck: "false", "aria-label": label, id: "p-" + item.id, readOnly: viewOnly });
+    t.value = item.prompt || "";
+    t.addEventListener("input", () => { item.prompt = t.value; fit(t); queueEdges(); changed(); });
+    return t;
+  }
+  function footer(item, t) {
+    const cb = h("input", { type: "checkbox", id: "d-" + item.id });
+    cb.checked = !!item.done; cb.disabled = viewOnly;
+    cb.addEventListener("change", () => { item.done = cb.checked; open.delete(item.id); rerender(item); renderMeta(); changed(); });
+    const copy = h("button", { class: "copy", type: "button", text: "Копировать" });
+    copy.addEventListener("click", () => {
+      const txt = t ? t.value : "";
+      const ok = () => { copy.textContent = "Скопировано"; setTimeout(() => (copy.textContent = "Копировать"), 1400); };
+      try { navigator.clipboard.writeText(txt).then(ok, () => { t && (t.focus(), t.select()); }); }
+      catch (e) { t && (t.focus(), t.select()); }
+    });
+    return h("div", { class: "nf" }, h("label", { for: "d-" + item.id }, cb, "сгенерировано"), t ? copy : null);
+  }
+  const open = new Set();
+  const stateCls = it => (it.done ? " done" : "") + (it.done && !open.has(it.id) ? " collapsed" : "");
+  function doneBits(it) {
+    if (!it.done) return [];
+    const isOpen = open.has(it.id);
+    const b = h("button", { class: "toggle", type: "button", "aria-expanded": String(isOpen), text: isOpen ? "Свернуть" : "Развернуть" });
+    b.addEventListener("click", () => { isOpen ? open.delete(it.id) : open.add(it.id); rerender(it); });
+    return [h("span", { class: "chip okc", text: "✓ сгенерировано" }), b];
+  }
+  function rerender(it) {
+    const n = $("#board").querySelector(`.node[data-id="${CSS.escape(it.id)}"]`); if (!n) return;
+    const make = S.characters.includes(it) ? charNode : S.frames.includes(it) ? frameNode : shotNode;
+    const fresh = make(it); n.replaceWith(fresh);
+    fresh.querySelectorAll("textarea.prompt").forEach(fit);
+    const tg = fresh.querySelector(".toggle"); if (tg) tg.focus({ preventScroll: true });
+    queueEdges();
+  }
+  function refsRow(it) {
+    const list = (it.refs || []).map(r => typeof r === "string" ? { url: r } : r).filter(r => r && /^https?:\/\//i.test(r.url || ""));
+    if (!list.length) return null;
+    return h("p", { class: "refs" }, list.map(r => h("a", { href: r.url, target: "_blank", rel: "noopener noreferrer", text: r.label || "реф" })));
+  }
+  const charName = id => byId(S.characters, id)?.title || id;
+  const frameName = id => byId(S.frames, id)?.short || byId(S.frames, id)?.title || id;
+
+  function charNode(c) {
+    const t = promptBox(c, "Промпт персонажа " + c.title);
+    return h("article", { class: "node" + stateCls(c), "data-k": "char", "data-id": c.id, tabindex: "-1" },
+      h("div", { class: "nh" }, h("span", { class: "ttl", text: c.title }), c.done ? null : h("span", { class: "chips" }, h("span", { class: "chip code ref-char", text: "[" + c.ref + " image]" })), doneBits(c)),
+      c.note ? h("p", { class: "note", text: c.note }) : null, refsRow(c), t, footer(c, t));
+  }
+  function frameNode(f) {
+    const chips = (f.characters || []).map(id => h("span", { class: "chip ref-char", text: charName(id) }));
+    if (f.location) chips.push(h("span", { class: "chip ref-frame", text: "локация: " + frameName(f.location) }));
+    const t = promptBox(f, "Промпт первого кадра " + f.title);
+    return h("article", { class: "node" + stateCls(f), "data-k": "frame", "data-id": f.id, tabindex: "-1" },
+      h("div", { class: "nh" }, h("span", { class: "sid", text: f.short || "" }), h("span", { class: "ttl", text: f.title }), doneBits(f)),
+      chips.length ? h("div", { class: "chips" }, chips) : null,
+      f.note ? h("p", { class: "note", text: f.note }) : null, refsRow(f), t, footer(f, t));
+  }
+  function shotNode(s) {
+    const post = s.type === "post";
+    const chips = [];
+    if (s.frame) chips.push(h("span", { class: "chip ref-frame", text: frameName(s.frame) }));
+    (s.tags || []).forEach(k => { const d = TAGS[k] || [k, ""]; chips.push(h("span", { class: "chip " + d[1], text: d[0] })); });
+    if (post) chips.push(h("span", { class: "chip", text: "не генерируем" }));
+    const t = post ? null : promptBox(s, "Видео-промпт " + s.n);
+    return h("article", { class: "node" + (post ? " post" : "") + (post ? "" : stateCls(s)), "data-k": "shot", "data-id": s.id, tabindex: "-1" },
+      h("div", { class: "nh" }, h("span", { class: "sid", text: s.n }), h("span", { class: "ttl", text: s.title }), post ? null : doneBits(s)),
+      chips.length ? h("div", { class: "chips" }, chips) : null,
+      s.vo ? h("p", { class: "vo", text: "«" + s.vo + "»" }) : null,
+      s.note ? h("p", { class: "note", text: s.note }) : null,
+      refsRow(s),
+      s.legend ? h("p", { class: "legend", text: s.legend }) : null,
+      t, post ? null : footer(s, t));
+  }
+
+  function renderMeta() {
+    document.title = S.title || document.title;
+    $("#h-title").textContent = S.title || "Проект";
+    const gen = S.shots.filter(s => s.type !== "post");
+    const all = [...S.characters, ...S.frames, ...gen];
+    const done = all.filter(x => x.done).length;
+    const m = $("#h-meta"); m.replaceChildren();
+    const add = (k, v) => m.append(h("span", {}, k + " ", h("b", { text: String(v) })));
+    if (S.style) add("стиль", S.style);
+    if (S.model) add("модель", S.model);
+    add("кадров", S.frames.length);
+    add("видео", gen.length);
+    add("липсинк", gen.filter(s => (s.tags || []).includes("lipsync")).length);
+    add("готово", done + " / " + all.length);
+  }
+  function renderTabs() {
+    const nav = $("#tabs"); nav.replaceChildren();
+    [{ id: "all", title: "Все" }, ...(S.groups || [])].forEach(g => {
+      const b = h("button", { class: "tab", type: "button", "aria-pressed": String(filter === g.id), text: g.title });
+      b.addEventListener("click", () => { filter = g.id; try { sessionStorage.setItem(KEY + ":tab", filter); } catch (e) {} renderTabs(); renderBoard(); });
+      nav.append(b);
+    });
+  }
+  function fill(col, nodes, count) {
+    const sec = $(col); [...sec.querySelectorAll(":scope > :not(.col-h)")].forEach(n => n.remove());
+    sec.querySelector(".col-h .n").textContent = count;
+    if (!nodes.length) sec.append(h("p", { class: "empty", text: "Нет элементов в этой версии" }));
+    sec.append(...nodes);
+  }
+  function renderBoard() {
+    if (!S.groups?.some(g => g.id === filter)) filter = "all";
+    const v = visibleSets();
+    fill("#col-char", S.characters.filter(c => v.chars.has(c.id)).map(charNode), v.chars.size);
+    fill("#col-frame", S.frames.filter(f => v.frames.has(f.id)).map(frameNode), v.frames.size);
+    const nodes = []; let g = null;
+    v.shots.forEach(s => {
+      if (filter === "all" && s.group !== g) { g = s.group; const gr = byId(S.groups, g); nodes.push(h("div", { class: "group-h", text: gr ? gr.title : g })); }
+      nodes.push(shotNode(s));
+    });
+    fill("#col-shot", nodes, v.shots.filter(s => s.type !== "post").length);
+    document.querySelectorAll("textarea.prompt").forEach(fit);
+    queueEdges();
+  }
+
+  /* ---------- edges ---------- */
+  let raf = 0;
+  function queueEdges() { cancelAnimationFrame(raf); raf = requestAnimationFrame(drawEdges); }
+  function drawEdges() {
+    const svg = $("#edges"), board = $("#board");
+    if (!S || getComputedStyle(svg).display === "none") return;
+    const b = board.getBoundingClientRect();
+    svg.setAttribute("width", b.width); svg.setAttribute("height", b.height);
+    svg.setAttribute("viewBox", `0 0 ${b.width} ${b.height}`);
+    const anchor = (id, side) => {
+      const n = board.querySelector(`.node[data-id="${CSS.escape(id)}"]`); if (!n) return null;
+      const r = n.getBoundingClientRect();
+      return { x: (side === "r" ? r.right : r.left) - b.left, y: r.top - b.top + 20 };
+    };
+    const NS = "http://www.w3.org/2000/svg", paths = [];
+    const link = (from, to, kind) => {
+      const a = anchor(from, "r"), z = anchor(to, "l"); if (!a || !z) return;
+      const dx = Math.max(30, (z.x - a.x) / 2);
+      const p = document.createElementNS(NS, "path");
+      p.setAttribute("d", `M${a.x},${a.y} C${a.x + dx},${a.y} ${z.x - dx},${z.y} ${z.x},${z.y}`);
+      p.setAttribute("class", "k-" + kind); p.dataset.a = from; p.dataset.b = to; paths.push(p);
+    };
+    S.frames.forEach(f => (f.characters || []).forEach(c => link(c, f.id, "char")));
+    S.shots.forEach(s => s.frame && link(s.frame, s.id, "frame"));
+    svg.replaceChildren(...paths);
+    if (lit) light(lit);
+  }
+
+  /* ---------- hover / focus highlight ---------- */
+  let lit = null;
+  function light(id) {
+    lit = id; const board = $("#board");
+    if (!id) { board.classList.remove("focus"); board.querySelectorAll(".lit").forEach(n => n.classList.remove("lit")); return; }
+    const set = related(id);
+    board.classList.add("focus");
+    board.querySelectorAll(".node").forEach(n => n.classList.toggle("lit", set.has(n.dataset.id)));
+    board.querySelectorAll("#edges path").forEach(p => p.classList.toggle("lit", set.has(p.dataset.a) && set.has(p.dataset.b)));
+  }
+  function wire() {
+    const board = $("#board");
+    board.addEventListener("mouseover", e => { const n = e.target.closest(".node"); const id = n ? n.dataset.id : null; if (id !== lit && !board.contains(document.activeElement?.closest?.(".node") || null)) light(id); });
+    board.addEventListener("mouseleave", () => { if (!board.contains(document.activeElement?.closest?.(".node") || null)) light(null); });
+    board.addEventListener("focusin", e => { const n = e.target.closest(".node"); light(n ? n.dataset.id : null); });
+    board.addEventListener("focusout", e => { if (!board.contains(e.relatedTarget)) light(null); });
+    new ResizeObserver(() => { fitAll(); queueEdges(); }).observe(board);
+    if (document.fonts) document.fonts.addEventListener("loadingdone", () => { fitAll(); queueEdges(); });
+    $("#copy-json").addEventListener("click", e => {
+      const b = e.currentTarget, txt = JSON.stringify(S, null, 2);
+      const done = () => { b.textContent = "JSON скопирован"; setTimeout(() => (b.textContent = "Скопировать JSON"), 1600); };
+      try { navigator.clipboard.writeText(txt).then(done, () => { b.textContent = "Не вышло — скопируй из data.json"; }); } catch (err) {}
+    });
+  }
+
+  /* ---------- boot ---------- */
+  async function boot() {
+    try { const r = await fetch("data.json", { cache: "no-store" }); if (!r.ok) throw 0; served = await r.text(); S = JSON.parse(served); }
+    catch (e) { $("#h-title").textContent = "Не удалось загрузить data.json"; setStatus("error"); return; }
+    try { const d = JSON.parse(localStorage.getItem(KEY) || "null"); if (d && d.base === hash(served) && d.data) { S = d.data; dirty = true; } } catch (e) {}
+    S.characters ||= []; S.frames ||= []; S.shots ||= []; S.groups ||= [];
+    renderMeta(); renderTabs(); renderBoard(); wire();
+    setStatus(dirty ? "dirty" : "saved");
+    if (document.fonts) document.fonts.ready.then(() => { document.querySelectorAll("textarea.prompt").forEach(fit); queueEdges(); });
+    const use = window.claude && window.claude.use;
+    if (!use) { applyViewOnly(); return; }
+    Promise.all([window.claude.use("artifact"), window.claude.use("user").catch(() => null)]).then(async ([a, u]) => {
+      art = a;
+      if (!a) { applyViewOnly(); return; }
+      if (u) { let ok = true; try { ok = await u.canEdit(); } catch (e) {} if (!ok) { applyViewOnly(); return; } }
+      if (dirty) schedule(500);
+    }, () => applyViewOnly());
+  }
+  boot();
+})();
+</script>
